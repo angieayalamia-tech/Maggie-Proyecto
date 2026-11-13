@@ -1,0 +1,6 @@
+{
+  "name": "Maggie Sex Ed",
+  "description": "Plataforma de psicoeducación sexual, bienestar emocional y líneas de ayuda en Colombia para personas adultas mayores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
