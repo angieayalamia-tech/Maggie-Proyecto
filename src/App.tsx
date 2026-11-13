@@ -42,13 +42,17 @@ export default function App() {
   }, [loadPublicData]);
 
   useEffect(() => {
-    const handleHashChange = () => {
-      if (window.location.hash === '#admin' || window.location.pathname === '/admin') {
-        setIsAdminRoute(true);
-      }
+    const syncAdminRoute = () => {
+      setIsAdminRoute(
+        window.location.hash === '#admin' || window.location.pathname === '/admin'
+      );
     };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('hashchange', syncAdminRoute);
+    window.addEventListener('popstate', syncAdminRoute);
+    return () => {
+      window.removeEventListener('hashchange', syncAdminRoute);
+      window.removeEventListener('popstate', syncAdminRoute);
+    };
   }, []);
 
   const navigateTo = (section: PublicSection) => {

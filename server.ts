@@ -557,10 +557,22 @@ async function startServer(): Promise<void> {
 
   app.delete('/api/admin/cartillas/:id', requireAdmin, async (req, res) => {
     try {
-      await updateStore((store) => ({
-        ...store,
-        cartillas: store.cartillas.filter((c) => c.id !== req.params.id),
-      }));
+      let deletedItem: CartillaItem | undefined;
+      await updateStore((store) => {
+        deletedItem = store.cartillas.find((c) => c.id === req.params.id);
+        return {
+          ...store,
+          cartillas: store.cartillas.filter((c) => c.id !== req.params.id),
+        };
+      });
+      if (!deletedItem) {
+        res.status(404).json({ error: 'Cartilla no encontrada.' });
+        return;
+      }
+      if (deletedItem.uploadedFileName) {
+        const uploadedPath = path.join(getUploadsDir(), path.basename(deletedItem.uploadedFileName));
+        await fs.unlink(uploadedPath).catch(() => undefined);
+      }
       res.json({ ok: true });
     } catch (error) {
       console.error('Delete cartilla error:', error);
@@ -638,10 +650,21 @@ async function startServer(): Promise<void> {
 
   app.delete('/api/admin/helplines/:id', requireAdmin, async (req, res) => {
     try {
-      await updateStore((store) => ({
-        ...store,
-        helplines: store.helplines.filter((h) => h.id !== req.params.id),
-      }));
+      let existed = false;
+      await updateStore((store) => {
+        const filtered = store.helplines.filter((h) => {
+          if (h.id === req.params.id) {
+            existed = true;
+            return false;
+          }
+          return true;
+        });
+        return { ...store, helplines: filtered };
+      });
+      if (!existed) {
+        res.status(404).json({ error: 'Línea no encontrada.' });
+        return;
+      }
       res.json({ ok: true });
     } catch (error) {
       console.error('Delete helpline error:', error);
@@ -658,11 +681,18 @@ async function startServer(): Promise<void> {
         resetPrompt?: boolean;
       };
 
+      if (!resetPrompt && typeof systemPrompt === 'string' && systemPrompt.trim().length <= 40) {
+        res.status(400).json({
+          error: 'El prompt del sistema debe tener más de 40 caracteres.',
+        });
+        return;
+      }
+
       const nextStore = await updateStore((store) => ({
         ...store,
         systemPrompt: resetPrompt
           ? DEFAULT_MAGGIE_SYSTEM_PROMPT
-          : typeof systemPrompt === 'string' && systemPrompt.trim().length > 40
+          : typeof systemPrompt === 'string'
             ? systemPrompt.trim()
             : store.systemPrompt,
         projectInfo: projectInfo ? projectInfo : store.projectInfo,
@@ -680,6 +710,11 @@ async function startServer(): Promise<void> {
 
   // Serve uploaded PDFs cleanly
   app.use('/uploads', express.static(getUploadsDir()));
+
+  // Return JSON 404 for unknown API endpoints instead of falling through to SPA HTML
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Ruta API no encontrada.' });
+  });
 
   if (!IS_PROD) {
     const vite = await createViteServer({

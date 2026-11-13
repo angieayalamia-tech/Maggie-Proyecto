@@ -166,7 +166,11 @@ export const ChatSection: React.FC<ChatSectionProps> = ({
   };
 
   useEffect(() => {
-    if (initialPrompt && processedInitialRef.current !== initialPrompt) {
+    if (!initialPrompt) {
+      processedInitialRef.current = null;
+      return;
+    }
+    if (processedInitialRef.current !== initialPrompt) {
       processedInitialRef.current = initialPrompt;
       onClearInitialPrompt();
       void sendMessage(initialPrompt);
@@ -235,9 +239,15 @@ export const ChatSection: React.FC<ChatSectionProps> = ({
           riskCategory,
         }),
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
+      const rawBody = await res.text();
+      let data: { ok?: boolean; error?: string } | null = null;
+      try {
+        data = JSON.parse(rawBody) as { ok?: boolean; error?: string };
+      } catch {
+        data = null;
+      }
       if (!res.ok) {
-        throw new Error(data.error || 'No fue posible registrar el contacto.');
+        throw new Error(data?.error || 'No fue posible registrar el contacto.');
       }
       setFormSubmitted(true);
     } catch (err) {

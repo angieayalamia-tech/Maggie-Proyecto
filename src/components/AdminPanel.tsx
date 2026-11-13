@@ -49,6 +49,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [overview, setOverview] = useState<AdminOverviewPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+  const [feedbackIsError, setFeedbackIsError] = useState(false);
+  const [notesDrafts, setNotesDrafts] = useState<Record<string, string>>({});
 
   // New cartilla form
   const [newTitle, setNewTitle] = useState('');
@@ -75,6 +77,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [projectDraft, setProjectDraft] = useState<ProjectInfo | null>(null);
   const [newAdminPassword, setNewAdminPassword] = useState('');
 
+  const showSuccess = (msg: string) => {
+    setFeedbackIsError(false);
+    setFeedbackMsg(msg);
+  };
+
+  const showError = (msg: string) => {
+    setFeedbackIsError(true);
+    setFeedbackMsg(msg);
+  };
+
+  const parseJsonSafe = async <T,>(res: Response): Promise<T | null> => {
+    const raw = await res.text();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const handleUnauthorized = () => {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    setToken(null);
+    setOverview(null);
+    setLoginError('Su sesión administrativa expiró. Por favor ingrese nuevamente.');
+  };
+
   const fetchOverview = async (activeToken: string) => {
     setLoading(true);
     try {
@@ -82,8 +111,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         headers: { Authorization: `Bearer ${activeToken}` },
       });
       if (res.status === 401) {
-        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-        setToken(null);
+        handleUnauthorized();
         return;
       }
       if (!res.ok) throw new Error('Error al cargar el panel.');
@@ -91,8 +119,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setOverview(data);
       setPromptDraft(data.systemPrompt);
       setProjectDraft(data.projectInfo);
+      const nextDrafts: Record<string, string> = {};
+      for (const rc of data.riskContacts) {
+        nextDrafts[rc.id] = rc.adminNotes;
+      }
+      setNotesDrafts(nextDrafts);
     } catch (err) {
-      setFeedbackMsg(
+      showError(
         err instanceof Error ? err.message : 'No fue posible cargar la información administrativa.'
       );
     } finally {
@@ -116,9 +149,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: passwordInput }),
       });
-      const data = (await res.json()) as { token?: string; error?: string };
-      if (!res.ok || !data.token) {
-        throw new Error(data.error || 'No fue posible iniciar sesión.');
+      const data = await parseJsonSafe<{ token?: string; error?: string }>(res);
+      if (!res.ok || !data?.token) {
+        throw new Error(data?.error || 'No fue posible iniciar sesión.');
       }
       sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
       setToken(data.token);
@@ -143,54 +176,92 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     adminNotes: string
   ) => {
     if (!token) return;
-    const res = await fetch(`/api/admin/risk-contacts/${id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ status, adminNotes }),
-    });
-    if (res.ok) {
-      setFeedbackMsg('Estado de seguimiento actualizado.');
+    try {
+      const res = await fetch(`/api/admin/risk-contacts/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ status, adminNotes }),
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error || 'No fue posible actualizar el seguimiento.');
+      }
+      showSuccess('Estado de seguimiento actualizado.');
       await fetchOverview(token);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al actualizar.');
     }
   };
 
   const handleDeleteContact = async (id: string) => {
     if (!token) return;
-    const res = await fetch(`/api/admin/risk-contacts/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-      setFeedbackMsg('Registro eliminado permanentemente (cumplimiento Ley 1581).');
+    try {
+      const res = await fetch(`/api/admin/risk-contacts/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error || 'No fue posible eliminar el registro.');
+      }
+      showSuccess('Registro eliminado permanentemente (cumplimiento Ley 1581).');
       await fetchOverview(token);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al eliminar.');
     }
   };
 
   const handleExport = async (format: 'csv' | 'json') => {
     if (!token) return;
-    const res = await fetch(`/api/admin/risk-contacts/export?format=${format}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `maggie-contactos.${format}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    try {
+      const res = await fetch(`/api/admin/risk-contacts/export?format=${format}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      if (!res.ok) {
+        throw new Error('No fue posible exportar los registros.');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `maggie-contactos.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error al exportar registros.');
+    }
   };
 
   const handlePdfUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.type !== 'application/pdf') {
-      setFeedbackMsg('Por favor seleccione únicamente archivos en formato PDF.');
+    const isPdf =
+      file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      showError('Por favor seleccione únicamente archivos en formato PDF.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      showError('El archivo PDF supera el límite máximo permitido de 8 MB.');
+      e.target.value = '';
       return;
     }
     setPdfFileName(file.name);
@@ -206,139 +277,197 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleAddCartilla = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token) return;
-    const res = await fetch('/api/admin/cartillas', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        title: newTitle,
-        category: newCategory,
-        shortDescription: newDesc,
-        authorOrInstitution: newAuthor,
-        isDemonstrative: newIsDemo,
-        coverTone: newCoverTone,
-        bodyText: newBody,
-        pdfBase64,
-      }),
-    });
-    const data = (await res.json()) as { error?: string };
-    if (!res.ok) {
-      setFeedbackMsg(data.error || 'No fue posible crear la cartilla.');
-      return;
+    try {
+      const res = await fetch('/api/admin/cartillas', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: newTitle,
+          category: newCategory,
+          shortDescription: newDesc,
+          authorOrInstitution: newAuthor,
+          isDemonstrative: newIsDemo,
+          coverTone: newCoverTone,
+          bodyText: newBody,
+          pdfBase64,
+        }),
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        showError(data?.error || 'No fue posible crear la cartilla.');
+        return;
+      }
+      setNewTitle('');
+      setNewDesc('');
+      setNewBody('');
+      setPdfBase64(undefined);
+      setPdfFileName('');
+      showSuccess('Cartilla agregada a la biblioteca.');
+      onDataUpdated();
+      await fetchOverview(token);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al publicar la cartilla.');
     }
-    setNewTitle('');
-    setNewDesc('');
-    setNewBody('');
-    setPdfBase64(undefined);
-    setPdfFileName('');
-    setFeedbackMsg('Cartilla agregada a la biblioteca.');
-    onDataUpdated();
-    await fetchOverview(token);
   };
 
   const handleDeleteCartilla = async (id: string) => {
     if (!token) return;
-    const res = await fetch(`/api/admin/cartillas/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-      setFeedbackMsg('Cartilla eliminada de la biblioteca.');
+    try {
+      const res = await fetch(`/api/admin/cartillas/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error || 'No fue posible eliminar la cartilla.');
+      }
+      showSuccess('Cartilla eliminada de la biblioteca.');
       onDataUpdated();
       await fetchOverview(token);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al eliminar la cartilla.');
     }
   };
 
   const handleAddHelpline = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token) return;
-    const res = await fetch('/api/admin/helplines', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        name: hlName,
-        city: hlCity,
-        department: hlDept || hlCity,
-        coverage: hlCity,
-        phone: hlPhone,
-        whatsapp: hlWhatsapp || undefined,
-        hours: hlHours,
-        supportType: hlSupport || 'Orientación psicológica',
-      } satisfies Partial<HelplineItem>),
-    });
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/admin/helplines', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: hlName,
+          city: hlCity,
+          department: hlDept || hlCity,
+          coverage: hlCity,
+          phone: hlPhone,
+          whatsapp: hlWhatsapp || undefined,
+          hours: hlHours,
+          supportType: hlSupport || 'Orientación psicológica',
+        } satisfies Partial<HelplineItem>),
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error || 'No fue posible guardar la línea de atención.');
+      }
       setHlName('');
       setHlCity('');
       setHlDept('');
       setHlPhone('');
       setHlWhatsapp('');
       setHlSupport('');
-      setFeedbackMsg('Línea de atención agregada.');
+      showSuccess('Línea de atención agregada.');
       onDataUpdated();
       await fetchOverview(token);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al guardar la línea.');
     }
   };
 
   const handleDeleteHelpline = async (id: string) => {
     if (!token) return;
-    const res = await fetch(`/api/admin/helplines/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-      setFeedbackMsg('Línea de atención eliminada.');
+    try {
+      const res = await fetch(`/api/admin/helplines/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error || 'No fue posible eliminar la línea de atención.');
+      }
+      showSuccess('Línea de atención eliminada.');
       onDataUpdated();
       await fetchOverview(token);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al eliminar la línea.');
     }
   };
 
   const handleSaveConfig = async (resetPrompt = false) => {
     if (!token) return;
-    const res = await fetch('/api/admin/config', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        systemPrompt: resetPrompt ? undefined : promptDraft,
-        projectInfo: projectDraft,
-        resetPrompt,
-      }),
-    });
-    if (res.ok) {
-      setFeedbackMsg(
+    try {
+      const res = await fetch('/api/admin/config', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          systemPrompt: resetPrompt ? undefined : promptDraft,
+          projectInfo: projectDraft,
+          resetPrompt,
+        }),
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error || 'No fue posible guardar la configuración.');
+      }
+      showSuccess(
         resetPrompt
           ? 'Prompt de Maggie restaurado a la versión base.'
           : 'Configuración del proyecto y prompt guardados.'
       );
       onDataUpdated();
       await fetchOverview(token);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al guardar la configuración.');
     }
   };
 
   const handleChangeAdminPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || newAdminPassword.trim().length < 8) {
-      setFeedbackMsg('La contraseña debe tener al menos 8 caracteres.');
+      showError('La contraseña debe tener al menos 8 caracteres.');
       return;
     }
-    const res = await fetch('/api/admin/change-password', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ newPassword: newAdminPassword }),
-    });
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/admin/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ newPassword: newAdminPassword }),
+      });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      const data = await parseJsonSafe<{ error?: string }>(res);
+      if (!res.ok) {
+        throw new Error(data?.error || 'No fue posible actualizar la contraseña.');
+      }
       setNewAdminPassword('');
-      setFeedbackMsg('Contraseña administrativa actualizada correctamente.');
+      showSuccess('Contraseña administrativa actualizada correctamente.');
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Error de conexión al actualizar la contraseña.');
     }
   };
 
@@ -429,7 +558,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       </header>
 
       {feedbackMsg && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#1F6B68] bg-[#E3F2F1] px-5 py-3 text-base font-semibold text-[#1F6B68]">
+        <div
+          role={feedbackIsError ? 'alert' : 'status'}
+          className={`flex items-center justify-between gap-3 rounded-2xl border px-5 py-3 text-base font-semibold ${
+            feedbackIsError
+              ? 'border-[#D9644A] bg-[#FFF2EF] text-[#9E2E18]'
+              : 'border-[#1F6B68] bg-[#E3F2F1] text-[#1F6B68]'
+          }`}
+        >
           <span>{feedbackMsg}</span>
           <button
             type="button"
@@ -584,14 +720,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </span>
                       <input
                         type="text"
-                        defaultValue={record.adminNotes}
-                        onBlur={(e) =>
-                          void handleUpdateContactStatus(
-                            record.id,
-                            record.status,
-                            e.target.value
-                          )
+                        value={notesDrafts[record.id] ?? record.adminNotes}
+                        onChange={(e) =>
+                          setNotesDrafts((prev) => ({
+                            ...prev,
+                            [record.id]: e.target.value,
+                          }))
                         }
+                        onBlur={() => {
+                          const draft = notesDrafts[record.id] ?? record.adminNotes;
+                          if (draft !== record.adminNotes) {
+                            void handleUpdateContactStatus(record.id, record.status, draft);
+                          }
+                        }}
                         placeholder="Ej. Llamada realizada por Directora Comportamental..."
                         className="min-h-[44px] w-full rounded-xl border border-[#C8BBD6] bg-[#FAF6F0] px-3 py-2 text-base"
                       />
@@ -604,7 +745,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             key={st}
                             type="button"
                             onClick={() =>
-                              void handleUpdateContactStatus(record.id, st, record.adminNotes)
+                              void handleUpdateContactStatus(
+                                record.id,
+                                st,
+                                notesDrafts[record.id] ?? record.adminNotes
+                              )
                             }
                             className={`min-h-[44px] rounded-xl px-4 py-2 text-sm font-bold capitalize ${
                               record.status === st
